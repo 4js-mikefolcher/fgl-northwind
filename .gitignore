@@ -1,3 +1,9 @@
+# Genero compiled output
+*.42m
+*.42r
+*.42f
+*.42s
+
 # Compiled class file
 *.class
 
@@ -22,3 +28,14 @@
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
+
+# Local-only — this repo ships only the portable loader + README.
+# Database profiles, agent config, and per-backend schema artifacts stay local.
+res/
+mariadb/
+informix/
+postgres/
+*.4db
+.mcp.json
+CLAUDE.md
+.claude/
