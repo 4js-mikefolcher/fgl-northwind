@@ -10,15 +10,18 @@ differences behind branching keyed off `fgl_db_driver_type()`.
 ## Supported databases
 
 PostgreSQL (`pgs`), Informix (`ifx`), Oracle (`ora`), SQL Server (`snc`),
-MariaDB (`mdb`).
+MariaDB (`mdb`), SQLite (`sqt`).
 
 Portability is handled in the program:
 
-- **Auto-increment** — plain `INTEGER` primary keys plus one portable
-  `CREATE SEQUENCE … START WITH <max+1>` per table (works on all five engines).
-  The application obtains new keys via the driver's `nextval` expression.
+- **Auto-increment** — on the sequence-capable engines, plain `INTEGER`
+  primary keys plus one portable `CREATE SEQUENCE … START WITH <max+1>` per
+  table; the application obtains new keys via the driver's `nextval`
+  expression. SQLite has no sequences, so its keys use
+  `INTEGER PRIMARY KEY AUTOINCREMENT` instead.
 - **Binary columns** (`picture`, `photo`) — mapped per driver: `BYTEA` (pgs),
-  `BYTE` (ifx), `BLOB` (ora), `VARBINARY(MAX)` (snc), `LONGBLOB` (mdb).
+  `BYTE` (ifx), `BLOB` (ora), `VARBINARY(MAX)` (snc), `LONGBLOB` (mdb),
+  `BLOB` (sqt).
 - **Long text** — columns wider than 255 use `LVARCHAR` on Informix and
   `VARCHAR` elsewhere.
 - **Money** — `DECIMAL(p,s)` (portable) rather than `SMALLFLOAT`/`FLOAT`.
@@ -61,3 +64,17 @@ dbi.database.northwind.ifxemul.datatype.varchar = true
 
 Without these you will hit `ORA-12899` (multibyte data overflowing byte-sized
 columns) and `ORA-01861` (date literal format).
+
+## SQLite notes
+
+The `FGLPROFILE` `source` is the database file path, e.g.:
+
+```ini
+dbi.database.northwind.source = "/path/to/northwind.db"
+dbi.database.northwind.driver = "dbmsqt"
+```
+
+The `dbmsqt` driver does **not** create the file, so the loader creates an
+empty one (a valid empty SQLite database) before connecting if it is missing.
+SQLite is always UTF-8 and uses character length semantics; run with
+`FGL_LENGTH_SEMANTICS=CHAR` to match.

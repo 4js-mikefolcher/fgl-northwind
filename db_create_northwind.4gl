@@ -2,17 +2,21 @@
 #+
 #+ Portable across the Genero-supported backends this project targets:
 #+   PostgreSQL (pgs), Informix (ifx), Oracle (ora), SQL Server (snc),
-#+   MariaDB (mdb).
+#+   MariaDB (mdb), SQLite (sqt).
 #+
 #+ Database-specific syntax is isolated in the sql_* helper functions and
 #+ keyed off fgl_db_driver_type(). Auto-increment uses portable SQL
-#+ sequences (CREATE SEQUENCE ... START WITH); the application obtains
-#+ new keys via the driver-appropriate nextval expression.
+#+ sequences (CREATE SEQUENCE ... START WITH) on the engines that support
+#+ them; SQLite has no sequences, so its primary keys use
+#+ INTEGER PRIMARY KEY AUTOINCREMENT instead.
 
-#+ Database driver type code, e.g. "pgs", "ifx", "ora", "snc", "mdb".
+IMPORT os
+
+#+ Database driver type code, e.g. "pgs", "ifx", "ora", "snc", "mdb", "sqt".
 DEFINE m_drv STRING
 
 MAIN
+    CALL ensure_sqlite_db()
     DATABASE northwind
 
     LET m_drv = fgl_db_driver_type()
@@ -22,6 +26,31 @@ MAIN
     CALL db_insert_data()
     CALL db_create_sequences()
 END MAIN
+
+#+ Ensure the SQLite database file exists before connecting.
+#+
+#+ The dbmsqt driver does not create the file itself, so a fresh build would
+#+ fail with "unable to open database file". When the FGLPROFILE entry for
+#+ connection "northwind" uses the SQLite driver, create an empty file (a
+#+ valid empty SQLite database) if it is missing. No-op for every other
+#+ backend, and for an in-memory (":memory:") database.
+FUNCTION ensure_sqlite_db()
+    DEFINE drv, src STRING
+    DEFINE ch base.Channel
+
+    LET drv = base.Application.getResourceEntry("dbi.database.northwind.driver")
+    IF drv IS NULL THEN RETURN END IF
+    IF NOT (drv MATCHES "dbmsqt*") THEN RETURN END IF
+
+    LET src = base.Application.getResourceEntry("dbi.database.northwind.source")
+    IF src IS NULL OR src.getLength() == 0 THEN RETURN END IF
+    IF src == ":memory:" OR os.Path.exists(src) THEN RETURN END IF
+
+    LET ch = base.Channel.create()
+    CALL ch.openFile(src, "w")
+    CALL ch.close()
+    DISPLAY SFMT("Created SQLite database file: %1", src)
+END FUNCTION
 
 #+ Binary/LOB column type for the current database.
 FUNCTION sql_binary() RETURNS STRING
@@ -36,6 +65,8 @@ FUNCTION sql_binary() RETURNS STRING
             RETURN "VARBINARY(MAX)"  -- SQL Server
         WHEN "mdb"
             RETURN "LONGBLOB"        -- MariaDB
+        WHEN "sqt"
+            RETURN "BLOB"            -- SQLite
         OTHERWISE
             RETURN "BLOB"
     END CASE
@@ -50,12 +81,23 @@ FUNCTION sql_longvarchar(n INTEGER) RETURNS STRING
     RETURN SFMT("VARCHAR(%1)", n)
 END FUNCTION
 
+#+ Auto-increment primary-key column definition. SQLite has no sequences,
+#+ so it uses INTEGER PRIMARY KEY AUTOINCREMENT (which tracks the next id
+#+ itself); the other backends use a plain INTEGER key fed by a sequence
+#+ created in db_create_sequences().
+FUNCTION sql_serial_pk() RETURNS STRING
+    IF m_drv == "sqt" THEN
+        RETURN "INTEGER PRIMARY KEY AUTOINCREMENT"
+    END IF
+    RETURN "INTEGER NOT NULL PRIMARY KEY"
+END FUNCTION
+
 #+ Create all tables in database.
 FUNCTION db_create_tables()
     WHENEVER ERROR STOP
 
-    EXECUTE IMMEDIATE SFMT("CREATE TABLE categories (categoryid INTEGER NOT NULL PRIMARY KEY, categoryname VARCHAR(15) NOT NULL, description %1, picture %2)",
-        sql_longvarchar(1000), sql_binary())
+    EXECUTE IMMEDIATE SFMT("CREATE TABLE categories (categoryid %1, categoryname VARCHAR(15) NOT NULL, description %2, picture %3)",
+        sql_serial_pk(), sql_longvarchar(1000), sql_binary())
     EXECUTE IMMEDIATE "CREATE TABLE customercustomerdemo (
         customerid CHAR(20) NOT NULL,
         customertypeid CHAR(20) NOT NULL)"
@@ -73,8 +115,8 @@ FUNCTION db_create_tables()
         country VARCHAR(15),
         phone VARCHAR(24),
         fax VARCHAR(24))"
-    EXECUTE IMMEDIATE SFMT("CREATE TABLE employees (employeeid INTEGER NOT NULL PRIMARY KEY, lastname VARCHAR(20) NOT NULL, firstname VARCHAR(10) NOT NULL, title VARCHAR(30), titleofcourtesy VARCHAR(25), birthdate DATE, hiredate DATE, address VARCHAR(60), city VARCHAR(15), region VARCHAR(15), postalcode VARCHAR(10), country VARCHAR(15), homephone VARCHAR(24), extension VARCHAR(4), photo %1, notes %2, reportsto INTEGER, photopath VARCHAR(255))",
-        sql_binary(), sql_longvarchar(1000))
+    EXECUTE IMMEDIATE SFMT("CREATE TABLE employees (employeeid %1, lastname VARCHAR(20) NOT NULL, firstname VARCHAR(10) NOT NULL, title VARCHAR(30), titleofcourtesy VARCHAR(25), birthdate DATE, hiredate DATE, address VARCHAR(60), city VARCHAR(15), region VARCHAR(15), postalcode VARCHAR(10), country VARCHAR(15), homephone VARCHAR(24), extension VARCHAR(4), photo %2, notes %3, reportsto INTEGER, photopath VARCHAR(255))",
+        sql_serial_pk(), sql_binary(), sql_longvarchar(1000))
     EXECUTE IMMEDIATE "CREATE TABLE employeeterritories (
         employeeid INTEGER NOT NULL,
         territoryid VARCHAR(20) NOT NULL)"
@@ -84,54 +126,24 @@ FUNCTION db_create_tables()
         unitprice DECIMAL(10,2) NOT NULL,
         quantity SMALLINT NOT NULL,
         discount DECIMAL(4,2) NOT NULL)"
-    EXECUTE IMMEDIATE "CREATE TABLE orders (
-        orderid INTEGER NOT NULL PRIMARY KEY,
-        customerid CHAR(20),
-        employeeid INTEGER,
-        orderdate DATE,
-        requireddate DATE,
-        shippeddate DATE,
-        shipvia INTEGER,
-        freight DECIMAL(10,2),
-        shipname VARCHAR(40),
-        shipaddress VARCHAR(60),
-        shipcity VARCHAR(15),
-        shipregion VARCHAR(15),
-        shippostalcode VARCHAR(10),
-        shipcountry VARCHAR(15))"
-    EXECUTE IMMEDIATE "CREATE TABLE products (
-        productid INTEGER NOT NULL PRIMARY KEY,
-        productname VARCHAR(40) NOT NULL,
-        supplierid INTEGER,
-        categoryid INTEGER,
-        quantityperunit VARCHAR(20),
-        unitprice DECIMAL(10,2),
-        unitsinstock SMALLINT,
-        unitsonorder SMALLINT,
-        reorderlevel SMALLINT,
-        discontinued INTEGER NOT NULL)"
-    EXECUTE IMMEDIATE "CREATE TABLE region (
-        regionid INTEGER NOT NULL PRIMARY KEY,
-        regiondescription CHAR(20) NOT NULL)"
-    EXECUTE IMMEDIATE "CREATE TABLE shippers (
-        shipperid INTEGER NOT NULL PRIMARY KEY,
-        companyname VARCHAR(40) NOT NULL,
-        phone VARCHAR(24))"
-    EXECUTE IMMEDIATE "CREATE TABLE shippers_tmp (
-        shipperid INTEGER NOT NULL PRIMARY KEY,
-        companyname VARCHAR(40) NOT NULL,
-        phone VARCHAR(24))"
-    EXECUTE IMMEDIATE SFMT("CREATE TABLE suppliers (supplierid INTEGER NOT NULL PRIMARY KEY, companyname VARCHAR(40) NOT NULL, contactname VARCHAR(30), contacttitle VARCHAR(30), address VARCHAR(60), city VARCHAR(15), region VARCHAR(15), postalcode VARCHAR(10), country VARCHAR(15), phone VARCHAR(24), fax VARCHAR(24), homepage %1)",
-        sql_longvarchar(1000))
+    EXECUTE IMMEDIATE SFMT("CREATE TABLE orders (orderid %1, customerid CHAR(20), employeeid INTEGER, orderdate DATE, requireddate DATE, shippeddate DATE, shipvia INTEGER, freight DECIMAL(10,2), shipname VARCHAR(40), shipaddress VARCHAR(60), shipcity VARCHAR(15), shipregion VARCHAR(15), shippostalcode VARCHAR(10), shipcountry VARCHAR(15))",
+        sql_serial_pk())
+    EXECUTE IMMEDIATE SFMT("CREATE TABLE products (productid %1, productname VARCHAR(40) NOT NULL, supplierid INTEGER, categoryid INTEGER, quantityperunit VARCHAR(20), unitprice DECIMAL(10,2), unitsinstock SMALLINT, unitsonorder SMALLINT, reorderlevel SMALLINT, discontinued INTEGER NOT NULL)",
+        sql_serial_pk())
+    EXECUTE IMMEDIATE SFMT("CREATE TABLE region (regionid %1, regiondescription CHAR(20) NOT NULL)",
+        sql_serial_pk())
+    EXECUTE IMMEDIATE SFMT("CREATE TABLE shippers (shipperid %1, companyname VARCHAR(40) NOT NULL, phone VARCHAR(24))",
+        sql_serial_pk())
+    EXECUTE IMMEDIATE SFMT("CREATE TABLE shippers_tmp (shipperid %1, companyname VARCHAR(40) NOT NULL, phone VARCHAR(24))",
+        sql_serial_pk())
+    EXECUTE IMMEDIATE SFMT("CREATE TABLE suppliers (supplierid %1, companyname VARCHAR(40) NOT NULL, contactname VARCHAR(30), contacttitle VARCHAR(30), address VARCHAR(60), city VARCHAR(15), region VARCHAR(15), postalcode VARCHAR(10), country VARCHAR(15), phone VARCHAR(24), fax VARCHAR(24), homepage %2)",
+        sql_serial_pk(), sql_longvarchar(1000))
     EXECUTE IMMEDIATE "CREATE TABLE territories (
         territoryid VARCHAR(20) NOT NULL,
         territorydescription CHAR(20) NOT NULL,
         regionid INTEGER NOT NULL)"
-    EXECUTE IMMEDIATE "CREATE TABLE usstates (
-        stateid INTEGER NOT NULL PRIMARY KEY,
-        statename VARCHAR(100),
-        stateabbr VARCHAR(2),
-        stateregion VARCHAR(50))"
+    EXECUTE IMMEDIATE SFMT("CREATE TABLE usstates (stateid %1, statename VARCHAR(100), stateabbr VARCHAR(2), stateregion VARCHAR(50))",
+        sql_serial_pk())
 END FUNCTION
 
 #+ Drop all tables from database.
@@ -154,15 +166,17 @@ FUNCTION db_drop_tables()
     EXECUTE IMMEDIATE "DROP TABLE territories"
     EXECUTE IMMEDIATE "DROP TABLE usstates"
 
-    -- Sequences (DROP SEQUENCE is portable across all five targets).
-    EXECUTE IMMEDIATE "DROP SEQUENCE categories_categoryid_seq"
-    EXECUTE IMMEDIATE "DROP SEQUENCE employees_employeeid_seq"
-    EXECUTE IMMEDIATE "DROP SEQUENCE orders_orderid_seq"
-    EXECUTE IMMEDIATE "DROP SEQUENCE products_productid_seq"
-    EXECUTE IMMEDIATE "DROP SEQUENCE region_regionid_seq"
-    EXECUTE IMMEDIATE "DROP SEQUENCE shippers_shipperid_seq"
-    EXECUTE IMMEDIATE "DROP SEQUENCE suppliers_supplierid_seq"
-    EXECUTE IMMEDIATE "DROP SEQUENCE usstates_stateid_seq"
+    -- Sequences exist only on engines with CREATE SEQUENCE; SQLite has none.
+    IF m_drv != "sqt" THEN
+        EXECUTE IMMEDIATE "DROP SEQUENCE categories_categoryid_seq"
+        EXECUTE IMMEDIATE "DROP SEQUENCE employees_employeeid_seq"
+        EXECUTE IMMEDIATE "DROP SEQUENCE orders_orderid_seq"
+        EXECUTE IMMEDIATE "DROP SEQUENCE products_productid_seq"
+        EXECUTE IMMEDIATE "DROP SEQUENCE region_regionid_seq"
+        EXECUTE IMMEDIATE "DROP SEQUENCE shippers_shipperid_seq"
+        EXECUTE IMMEDIATE "DROP SEQUENCE suppliers_supplierid_seq"
+        EXECUTE IMMEDIATE "DROP SEQUENCE usstates_stateid_seq"
+    END IF
 
 END FUNCTION
 
@@ -3616,12 +3630,19 @@ END FUNCTION #
 #+
 #+ Rather than the Postgres-specific setval(), this computes MAX(id)+1 in
 #+ BDL and issues a portable `CREATE SEQUENCE ... START WITH n`, which is
-#+ supported by all five target backends (pgs, ifx, ora, snc, mdb).
+#+ supported by the sequence-capable backends (pgs, ifx, ora, snc, mdb).
 #+ The application obtains new keys via the driver-appropriate nextval
 #+ expression (e.g. nextval('seq') on PostgreSQL, seq.NEXTVAL on Informix
 #+ and Oracle, NEXT VALUE FOR seq on SQL Server, NEXTVAL(seq) on MariaDB).
+#+
+#+ SQLite has no sequences: its INTEGER PRIMARY KEY AUTOINCREMENT columns
+#+ track the next id automatically (in sqlite_sequence), so this is skipped.
 FUNCTION db_create_sequences()
     WHENEVER ERROR STOP
+
+    IF m_drv == "sqt" THEN
+        RETURN
+    END IF
 
     CALL create_seq("categories_categoryid_seq", "categoryid", "categories")
     CALL create_seq("employees_employeeid_seq",  "employeeid", "employees")
